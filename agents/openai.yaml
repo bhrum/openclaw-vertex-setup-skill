@@ -1,0 +1,4 @@
+version: 1
+display_name: OpenClaw Vertex Setup
+short_description: Configure OpenClaw to use Vertex AI Gemini models end to end.
+default_prompt: Configure or repair OpenClaw so it uses Vertex AI Gemini models, verify local agent execution, and verify Gateway plus TUI execution.
