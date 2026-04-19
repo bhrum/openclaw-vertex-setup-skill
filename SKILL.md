@@ -1,17 +1,18 @@
 ---
 name: openclaw-vertex-setup
-description: Configure OpenClaw to use Google Vertex AI Gemini models so normal OpenClaw startup, Gateway service startup, and TUI usage all work without manual shell setup. Covers gcloud ADC login, project and location setup, OpenClaw model defaults, shared env wiring, auth profile fixes, and end-to-end verification.
+description: Configure OpenClaw to use Google Vertex AI Gemini models so normal OpenClaw startup, Gateway service startup, and TUI usage all work without manual shell setup, and keep the Gateway service aligned with the globally installed npm OpenClaw binary. Covers gcloud ADC login, project and location setup, OpenClaw model defaults, shared env wiring, auth profile fixes, npm upgrade hygiene, and end-to-end verification.
 ---
 
 # OpenClaw Vertex Setup
 
-Use this skill when the task is to configure or repair OpenClaw so it uses Vertex AI models such as `google-vertex/gemini-2.5-pro`, and the result must work from normal `openclaw` commands instead of only from a manually prepared shell.
+Use this skill when the task is to configure or repair OpenClaw so it uses Vertex AI models such as `google-vertex/gemini-3.1-pro-preview`, and the result must work from normal `openclaw` commands instead of only from a manually prepared shell. Also use it when the user's `openclaw tui` or Gateway service is broken after upgrading the globally installed npm package.
 
 Target outcome:
 
 - `openclaw models status` recognizes Vertex
 - `openclaw gateway start` or `openclaw gateway restart` works
 - `openclaw tui` can chat through Vertex without manually exporting env vars first
+- Gateway LaunchAgent points at the same global npm `openclaw` binary that `which openclaw` resolves to
 
 Keep the workflow minimal and verify each layer separately:
 
@@ -25,6 +26,9 @@ Keep the workflow minimal and verify each layer separately:
 - User config: `~/.openclaw/openclaw.json`
 - Shared OpenClaw env: `~/.openclaw/.env`
 - Agent auth store: `~/.openclaw/agents/main/agent/auth-profiles.json`
+- Active CLI path: `which -a openclaw`
+- Gateway service wiring: `openclaw gateway status --deep`
+- launchd service file: `~/Library/LaunchAgents/ai.openclaw.gateway.plist`
 - Shell env: `~/.zshrc`
 - ADC file: `~/.config/gcloud/application_default_credentials.json`
 
@@ -35,12 +39,18 @@ Confirm the default OpenClaw model points at Vertex:
   "agents": {
     "defaults": {
       "model": {
-        "primary": "google-vertex/gemini-2.5-pro"
+        "primary": "google-vertex/gemini-3.1-pro-preview"
       }
     }
   }
 }
 ```
+
+Important model note:
+
+- In current OpenClaw builds, `google-vertex/gemini-3.1-pro-preview` is the config id commonly exposed by the CLI.
+- In Google Vertex AI docs, the corresponding preview family is documented as `gemini-3-pro-preview`.
+- Treat `3.1 pro` here as a preview track, not the latest stable track.
 
 ## Required environment
 
@@ -83,11 +93,30 @@ This is the most reliable fix for:
 - `openclaw tui`
 - launchd/systemd service startup
 
+## Keep Gateway aligned with the global npm install
+
+Avoid mixing a source-linked `openclaw` command with a Gateway service that was installed from a different build. The service should normally follow the globally installed npm package.
+
+Preferred steady state:
+
+- `which openclaw` resolves to the global npm path, for example `~/.npm-global/bin/openclaw`
+- `openclaw gateway status --deep` shows the service command under the matching global npm module path
+
+After any `npm install -g openclaw@latest`, always refresh the service installation:
+
+```bash
+openclaw gateway install --force
+openclaw gateway restart
+openclaw gateway status --deep
+```
+
+If the user switches back to a local source checkout with `npm link`, reinstall the Gateway service from that same source-managed CLI before testing. Do not leave an old LaunchAgent around from a different installation source.
+
 ## OpenClaw config changes
 
 Recommended minimum `~/.openclaw/openclaw.json` changes:
 
-- Set default model to `google-vertex/gemini-2.5-pro`
+- Set default model to `google-vertex/gemini-3.1-pro-preview`
 - Enable shell env import:
 
 ```json
@@ -148,13 +177,13 @@ gcloud auth application-default print-access-token | head -c 20; echo
 
 ### 2. Verify direct Vertex REST call
 
-Use the global endpoint and a tiny prompt:
+Use the global endpoint and a tiny prompt. For direct Vertex API verification, prefer Google's documented model id:
 
 ```bash
 python3 - <<'PY'
 import json, subprocess, urllib.request
 project='<project-id>'
-model='gemini-2.5-pro'
+model='gemini-3-pro-preview'
 url=f'https://aiplatform.googleapis.com/v1/projects/{project}/locations/global/publishers/google/models/{model}:generateContent'
 token=subprocess.check_output(['zsh','-lc','gcloud auth application-default print-access-token'], text=True).strip()
 payload={
@@ -179,7 +208,7 @@ openclaw models status
 
 Expected signals:
 
-- `google-vertex/gemini-2.5-pro` appears in model list
+- `google-vertex/gemini-3.1-pro-preview` appears in model list
 - auth overview shows `source=gcloud adc`
 
 ### 4. Verify local OpenClaw agent
@@ -189,6 +218,8 @@ source ~/.zshrc >/dev/null 2>&1
 export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/gcloud/application_default_credentials.json"
 openclaw agent --local --agent main --message "Reply with exactly: OPENCLAW_VERTEX_OK" --json
 ```
+
+If `google-vertex/gemini-3.1-pro-preview` returns an incomplete turn or `Agent couldn't generate a response`, keep the service and env fixes, then temporarily fall back to `google-vertex/gemini-2.5-pro`. As of 2026-04-19, `2.5-pro` is the latest stable model in Vertex docs, while Gemini 3 Pro is still preview.
 
 ### 5. Verify Gateway/TUI path
 
@@ -266,6 +297,19 @@ Then confirm with:
 openclaw gateway status --deep
 ```
 
+### TUI shows `invalid connect params`
+
+This usually means the CLI and Gateway service were installed from different OpenClaw versions. Reinstall the service from the currently active CLI:
+
+```bash
+which openclaw
+openclaw gateway install --force
+openclaw gateway restart
+openclaw gateway status --deep
+```
+
+Confirm the `Command:` shown by `status --deep` points at the same installation family as the active `openclaw` command.
+
 ## Success criteria
 
 The setup is complete when all of these are true:
@@ -275,4 +319,4 @@ The setup is complete when all of these are true:
 - `openclaw agent --local` returns `OPENCLAW_VERTEX_OK`
 - `openclaw agent` via Gateway returns `OPENCLAW_VERTEX_OK`
 - `openclaw gateway status --deep` shows `RPC probe: ok`
-- `openclaw tui` can answer a prompt through `google-vertex/gemini-2.5-pro`
+- `openclaw tui` can answer a prompt through `google-vertex/gemini-3.1-pro-preview`, or the skill explicitly documents a temporary fallback to `google-vertex/gemini-2.5-pro` when the preview model produces incomplete turns
